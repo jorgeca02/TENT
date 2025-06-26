@@ -3,8 +3,8 @@ import os.path
 import numpy as np
 import sklearn.model_selection
 
-import common.paths
-import dataset_tools.split
+import TENT.common.paths
+import TENT.dataset_tools.split
 
 
 def get_tensor_dataset(data_path, file_name, test_size,

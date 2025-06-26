@@ -1,25 +1,28 @@
 import tensorflow as tf
+#import keras as kr
 import tensorflow.keras as kr
+import numpy as np
 
-import common.paths
-import model.tensorized_transformer as tt
-from experiment_tools import load_dataset
+import TENT.common.paths
+import TENT.model.tensorized_transformer as tt
+from TENT.experiment_tools import load_dataset
 
 
 def initialize_tpu():
-    tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
-    print('Running on TPU ', tpu.cluster_spec().as_dict()['worker'])
+    tpu = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='local')
+    cluster_dict = tpu.cluster_spec().as_dict()
+    print('TPU detectada. ClusterSpec:', cluster_dict)
     tf.config.experimental_connect_to_cluster(tpu)
     tf.tpu.experimental.initialize_tpu_system(tpu)
-    strategy = tf.distribute.TPUStrategy(tpu)  # tf.distribute.experimental.TPUStrategy(tpu)
-    print("REPLICAS: ", strategy.num_replicas_in_sync)
+    strategy = tf.distribute.TPUStrategy(tpu)
+    print("TPU inicializada. Réplicas disponibles:", strategy.num_replicas_in_sync)
     return strategy
 
 
 def create_model(input_shape, output_shape,
                  input_length, num_layers,
                  d_model, head_num, dense_units,
-                 initializer, softmax_type, batch_size, save_aw):
+                 initializer, softmax_type, batch_size, save_aw,output_activation='linear'):
     layers = [kr.Input(shape=input_shape),
               tt.PositionalEncoding()]
 
@@ -29,7 +32,7 @@ def create_model(input_shape, output_shape,
 
     layers.extend([
         kr.layers.Flatten(),
-        kr.layers.Dense(tf.reduce_prod(output_shape), activation='linear'),
+        kr.layers.Dense(np.prod(output_shape), activation=output_activation),
         kr.layers.Reshape(output_shape),
     ])
 
@@ -39,7 +42,7 @@ def create_model(input_shape, output_shape,
 
 def train_model(dataset, softmax_type=3, epoch=300, patience=20,
                 num_layers=3, head_num=32, d_model=256, dense_units=128,
-                batch_size=16, loss=kr.losses.mse, use_tpu=True, save_aw = False):
+                batch_size=16, loss=kr.losses.MSE, use_tpu=True, save_aw = False,output_activation='linear'):
 
     if use_tpu:
         strategy = initialize_tpu()
@@ -70,7 +73,7 @@ def train_model(dataset, softmax_type=3, epoch=300, patience=20,
     Yvalid = Yvalid[:num_valid_examples, ...]
 
     input_shape = (input_length, Xtr.shape[-2], Xtr.shape[-1])
-    output_shape = (1, 1)
+    output_shape = (1, 82, 1) 
 
     learning_rate = tt.CustomSchedule(d_model, warmup_steps=warmup_steps, factor1=factor1, factor2=factor2)
     optimizer = tf.keras.optimizers.Adam(learning_rate,
@@ -82,31 +85,46 @@ def train_model(dataset, softmax_type=3, epoch=300, patience=20,
 
     if use_tpu:
         with strategy.scope():
+            learning_rate = tt.CustomSchedule(d_model, warmup_steps=warmup_steps, factor1=factor1, factor2=factor2)
+            optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+            lr_metric = tt.get_lr_metric(optimizer)
+            loss_fn = loss  # el parámetro recibido
+    
             model = create_model(input_shape, output_shape, input_length,
                                  num_layers, d_model, head_num, dense_units,
-                                 initializer, softmax_type, batch_size, save_aw)
-            model.compile(optimizer=optimizer, loss=loss, metrics=['mse', 'mae', lr_metric])
+                                 initializer, softmax_type, batch_size, save_aw, output_activation)
+            model.compile(optimizer=optimizer, loss=loss_fn, metrics=['mse', 'mae', lr_metric])
+    
+            early_stopping = kr.callbacks.EarlyStopping(
+                monitor='val_loss',
+                patience=patience,
+                restore_best_weights=True,
+                verbose=1
+            )
+    
+            print("Entrenando dentro de TPU strategy.scope()...")
+            model.summary()
+            history = model.fit(
+                Xtr, Ytr,
+                epochs=epoch,
+                batch_size=batch_size * 8,
+                validation_data=(Xvalid, Yvalid),
+                callbacks=[early_stopping]
+            )
     else:
         model = create_model(input_shape, output_shape, input_length,
                              num_layers, d_model, head_num, dense_units,
-                             initializer, softmax_type, batch_size, save_aw)
+                             initializer, softmax_type, batch_size, save_aw, output_activation)
         model.compile(optimizer=optimizer, loss=loss, metrics=['mse', 'mae', lr_metric])
-
-    # Callbacks
-    print_attention_weights = kr.callbacks.LambdaCallback(
-        on_train_end=lambda batch: print(model.layers[1].attention_weights))
-    early_stopping = kr.callbacks.EarlyStopping(monitor='val_loss',
-                                                patience=patience,
-                                                restore_best_weights=True,
-                                                verbose=1)
-    model.summary()
-    history = model.fit(
-        Xtr, Ytr,
-        epochs=epoch,
-        batch_size=batch_size * 8,
-        validation_data=(Xvalid, Yvalid),
-        callbacks=[early_stopping]
-    )
+    
+        model.summary()
+        history = model.fit(
+            Xtr, Ytr,
+            epochs=epoch,
+            batch_size=batch_size * 8,
+            validation_data=(Xvalid, Yvalid),
+            callbacks=[early_stopping]
+        )
 
     params = [
         ('softmax_type', softmax_type),
@@ -126,14 +144,14 @@ def train_model(dataset, softmax_type=3, epoch=300, patience=20,
     return model, params, history
 
 
-if __name__ == '__main__':
-    dataset, dataset_params = load_dataset.get_usa_dataset(data_path=common.paths.PROCESSED_DATASET_DIR,
-                                                           input_length=16, prediction_time=4,
-                                                           y_feature=4, y_city=0,
-                                                           start_city=0, end_city=30,
-                                                           remove_last_from_test=800,
-                                                           valid_split=1024, split_random=None)
-    Xtr, Ytr, Xvalid, Yvalid, Xtest, Ytest = dataset
-    print(Xtr.shape, Ytr.shape, Xtest.shape, Ytest.shape, Xvalid.shape, Yvalid.shape)
-    model, model_params, history = train_model(dataset, use_tpu=False)
-    params = dataset_params + model_params
+#if __name__ == '__main__':
+#    dataset, dataset_params = load_dataset.get_usa_dataset(data_path=common.paths.PROCESSED_DATASET_DIR,
+#                                                           input_length=16, prediction_time=4,
+#                                                           y_feature=4, y_city=0,
+#                                                           start_city=0, end_city=30,
+#                                                           remove_last_from_test=800,
+#                                                           valid_split=1024, split_random=None)
+#    Xtr, Ytr, Xvalid, Yvalid, Xtest, Ytest = dataset
+#    print(Xtr.shape, Ytr.shape, Xtest.shape, Ytest.shape, Xvalid.shape, Yvalid.shape)
+#    model, model_params, history = train_model(dataset, use_tpu=False)
+#    params = dataset_params + model_params

@@ -1,6 +1,6 @@
 import os
 import datetime
-import tensorflow.keras as kr
+import keras as kr
 import numpy as np
 import matplotlib.pyplot as plt
 import dataset_tools.denormalization as denorm

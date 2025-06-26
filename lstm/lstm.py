@@ -1,5 +1,5 @@
 import tensorflow as tf
-import tensorflow.keras as kr
+import keras as kr
 
 
 def create_lstm(sequence_length, input_size, output_size, num_layers, hidden_units, dropout_rate):

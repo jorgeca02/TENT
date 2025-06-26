@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 import tensorflow as tf
-import tensorflow.keras as kr
+import keras as kr
 
 
 """

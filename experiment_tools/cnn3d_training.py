@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-import tensorflow.keras as kr
+import keras as kr
 
 import model_3d_cnn.CNN3d as cnn3d
 

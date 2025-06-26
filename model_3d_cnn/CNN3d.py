@@ -1,5 +1,5 @@
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense, Input, Flatten, Lambda, Conv3D
+from keras.models import Model
+from keras.layers import Dense, Input, Flatten, Lambda, Conv3D
 import tensorflow as tf
 
 """

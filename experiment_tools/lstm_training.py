@@ -1,4 +1,4 @@
-import tensorflow.keras as kr
+import keras as kr
 import tensorflow as tf
 import numpy as np
 

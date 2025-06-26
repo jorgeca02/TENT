@@ -4,8 +4,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 import numpy as np
 import tensorflow as tf
-import tensorflow.keras as kr
-import common.paths
+import keras as kr
+import TENT.common.paths
 
 
 """
@@ -67,7 +67,7 @@ class EncoderLayer(kr.layers.Layer):
         self.d_model = d_model
         self.head_num = head_num
         self.dense_units = dense_units
-        self.initializer1 = initializer
+        self._initializer_name = initializer  # ← cambio de nombre para evitar conflicto
         self.initializer = tf.keras.initializers.get(initializer)
         self.softmax_type = softmax_type
         self.batch_size = batch_size
@@ -77,11 +77,13 @@ class EncoderLayer(kr.layers.Layer):
         self.wk = None
         self.wv = None
         self.wo = None
+
         self.layer_norm = tf.keras.layers.LayerNormalization(epsilon=1e-6)
         self.flatten = tf.keras.layers.Flatten()
         self.dense_hidden = tf.keras.layers.Dense(dense_units, activation='relu')
-        self.dense_out: tf.keras.layers.Dense = None
-        self.reshape: tf.keras.layers.Reshape = None
+
+        self.dense_out = None
+        self.reshape = None
 
     def build(self, input_shape):
         self.inp_shape = input_shape
@@ -111,8 +113,10 @@ class EncoderLayer(kr.layers.Layer):
             name="wo",
             trainable=True,
         )
-        self.dense_out = tf.keras.layers.Dense(tf.reduce_prod(input_shape[-3:]), activation='relu')
-        self.reshape = tf.keras.layers.Reshape(input_shape[-3:])
+        import numpy as np
+        output_shape = (1, input_shape[-2], 1)  # o directamente (1, 82, 1) si lo sabes fijo
+        self.dense_out = tf.keras.layers.Dense(np.prod(output_shape), dtype=tf.float32)
+        self.reshape = tf.keras.layers.Reshape(output_shape)
 
         if self.softmax_type in (1, 2):
             attention_shape = self.head_num, self.batch_size, self.input_length, self.input_length
@@ -161,7 +165,12 @@ class EncoderLayer(kr.layers.Layer):
         # linear
         x = self.flatten(norm)
         x = self.dense_hidden(x)
-        x = self.dense_out(x)
+        if self.dense_out is None:
+            output_shape = (1, 82, 1)
+            self.dense_out = tf.keras.layers.Dense(np.prod(output_shape), dtype=tf.float32)
+            self.reshape = tf.keras.layers.Reshape(output_shape)
+
+        x = self.dense_out(tf.cast(x, tf.float32))  # forzar dtype correcto
         out = self.reshape(x)
         # 2. Residual:
         sum = tf.math.add(norm, out)
@@ -228,7 +237,7 @@ class EncoderLayer(kr.layers.Layer):
             'd_model': self.d_model,
             'head_num': self.head_num,
             'dense_units': self.dense_units,
-            'initializer': self.initializer1,
+            'initializer': self._initializer_name,
             'softmax_type': self.softmax_type,
             'save_attention': self.save_attention,
         }
@@ -255,6 +264,7 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
         self.factor2 = factor2
 
     def __call__(self, step):
+        step = tf.cast(step, tf.float32)
         arg1 = tf.math.rsqrt(step)
         arg2 = step * (self.warmup_steps ** self.factor2)
 
@@ -263,9 +273,6 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
     def get_config(self):
         config = {
             'd_model': self.d_model,
-            'warmup_steps': self.warmup_steps,
-            'factor1': self.factor1,
-            'factor2': self.factor2,
         }
         return config
 
@@ -276,7 +283,10 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
 
 def get_lr_metric(optimizer):
     def lr(y_true, y_pred):
-        return optimizer._decayed_lr(tf.float32) # I use ._decayed_lr method instead of .lr
+        lr = optimizer.learning_rate
+        if isinstance(lr, tf.keras.optimizers.schedules.LearningRateSchedule):
+            return lr(optimizer.iterations)
+        return lr  # puede ser un valor fijo
     return lr
 
 
